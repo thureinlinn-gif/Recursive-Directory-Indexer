@@ -1,0 +1,256 @@
+#!/bin/bash
+
+# This script initializes the indexer for project1.
+# It sets up necessary configurations and starts the indexing process.
+
+#Check if exactly one argument is provided
+if [ $# -ne 1 ]; then
+    echo "Error: Exactly one directory argument is required." >&2
+
+    #>&2 sends the message to standard error (error output)
+    exit 1
+    # exit 1 means the script ends with an error status
+fi
+
+#Check if the argument is a valid directory
+if [ ! -d "$1" ]; then
+    # -d checks if the given path is an existing directory
+    echo "Error: '$1' is not a valid directory" >&2
+    exit 1
+fi 
+
+#Normalize the root path using realpath
+ROOT_DIR=$(realpath "$1")
+# realpath converts the given path to an absolute path
+
+#5.To handle filenames containing spaces, quotes, or other special characters correctly
+#Function to escape strings for JSON
+json_escape(){
+    local str="$1"
+
+    #Replace backslash, double quote, and control characters
+    #Escape backslashes
+    str="${str//\\/\\\\}"
+
+    #Escape double quotes
+    str="${str//\"/\\\"}"
+
+    #Escape tabs
+    str="${str//$'\t'/\\t}"
+
+    #Escape newlines
+    str="${str//$'\n'/\\n}"
+
+    #Escape carriage returns
+    str="${str//$'\r'/\\r}"
+
+    echo "$str"
+}
+
+#3: “Contents of index.json” and Notes → “All arrays must be sorted and valid JSON.”
+#Function to create JSON array from bash array
+create_json_array(){
+
+    #Referenceing input array
+    local -n arr=$1
+
+    #Start JSON array
+    local result="["
+
+    #Track commas
+    local first=true
+
+    #To loop through array and handle multiple filenames
+    for item in "${arr[@]}"; do
+        if [ "$first" = true ]; then
+            first=false
+        else 
+            result+=", "
+        fi
+
+        #Add safe, quoted item
+        result+="\"$(json_escape "$item")\""
+    done
+
+    #Close JSON array
+    result+="]"
+    echo "$result"
+}
+
+#Each index.json must have a key called "outer"
+#Function to compute how many ".." required to go from current dir to root directory
+compute_outer(){
+
+    local current_dir="$1"
+    local root_dir="$2"
+
+    #if the current directory is the same as the root directory
+    if [ "$current_dir" = "$root_dir" ]; then
+
+        #the relative path back to the root is just "."; that means I am already there
+        echo "."
+        return
+    fi
+
+    #To remove prefix that both parts share(the root part) for keeping the subpath deeper inside
+    local relative="${current_dir#$root_dir}"
+
+    # Remove leading slash if present<=new
+    relative="${relative#/}"
+
+    #To count how many slashes (/) are in the relative path by deleting all characters except (/) and counting the number of (/)
+    local count=$(echo "$relative" | tr -cd '/' | wc -c)
+
+    # Add 1 because we need one ".." for the directory itself<=new
+    count=$((count + 1))
+
+    #Build the .. path
+    local result=""
+    #Looping the number of directory levels counted
+    for ((i=0; i<count; i++)); do
+        if [ $i -eq 0 ]; then
+            result=".."
+        else
+            result+="/.."
+        fi
+    done
+
+    echo "$result"
+}
+
+#Function to process a single directory
+process_directory(){
+    local dir="$1"
+
+    #Arrays to hold filenames
+    local -a files=()
+    local -a directories=()
+    local -a special_files=()
+    local -a special_directories=()
+    local -a blacklist=()
+    local -a special=()
+
+    #Read blacklist and special files if they exist
+    if [ -f "$dir/_blacklist" ]; then
+        while IFS= read -r line; do
+            blacklist+=("$line")
+        done < "$dir/_blacklist"
+    fi
+
+    if [ -f "$dir/_special" ]; then
+        while IFS= read -r line; do
+            special+=("$line")
+        done < "$dir/_special"
+    fi
+
+    #Function to check if item is in blacklist
+    is_blacklisted(){
+
+        #function takes the file or directory name to check
+        local item="$1"
+
+        #Loop through blacklist array
+        for bl in "${blacklist[@]}"; do
+            if [ "$item" = "$bl" ]; then
+                return 0
+            fi
+        done
+        return 1
+    }
+
+    #Function to check if item is in special
+    is_special(){
+        local item="$1"
+        for sp in "${special[@]}"; do
+            if [ "$item" = "$sp" ]; then
+                return 0
+            fi
+        done
+        return 1
+    }
+
+    #Loop through items in the directory
+    #Split entries with null character to handle special characters in filenames
+    while IFS= read -r -d '' item; do
+
+        #Getting only the filename from the full path
+        local basename=$(basename "$item")
+
+        #Skip _blacklist and _special files themselves
+        if [ "$basename" = "_blacklist" ] || [ "$basename" = "_special" ]; then
+            continue
+        fi
+
+        #Skip blacklisted items
+        if is_blacklisted "$basename"; then
+            continue
+        fi
+
+        #Check whether it is a regular file/directory or a special file/directory
+        if [ -f "$item" ]; then
+            if is_special "$basename"; then
+                special_files+=("$basename")
+            else
+                files+=("$basename")
+            fi 
+
+        elif [ -d "$item" ]; then
+            if is_special "$basename"; then
+                special_directories+=("$basename")
+            else
+                directories+=("$basename")
+            fi 
+        fi 
+
+    #Find all immediate contents of the directory, skipping the directory itself without subholders inside subholders
+    #Seprate entries with null character to handle special characters in filenames
+    done < <(find "$dir" -mindepth 1 -maxdepth 1 -print0)
+
+    #Sort all arrays alphabetically and sets the input field separator to newline for correct sorting and then unsets it
+    IFS=$'\n' files=($(sort <<<"${files[*]}")); unset IFS
+    IFS=$'\n' directories=($(sort <<<"${directories[*]}")); unset IFS
+    IFS=$'\n' special_files=($(sort <<<"${special_files[*]}")); unset IFS
+    IFS=$'\n' special_directories=($(sort <<<"${special_directories[*]}")); unset IFS
+
+    #Compute outer path
+    # local outer=$(compute_outer "$dir" "$ROOT_DIR")
+    local outer=$(compute_outer "$dir" "$ROOT_DIR")
+
+
+    #Create index.json content
+    local json="{\n"
+    json+=" \"files\": $(create_json_array files),\n"
+    json+=" \"directories\": $(create_json_array directories),\n"
+    json+=" \"special_files\": $(create_json_array special_files),\n"
+    json+=" \"special_directories\": $(create_json_array special_directories),\n"
+    json+="  \"outer\": \"$(compute_outer "$dir" "$ROOT_DIR")\"\n"
+    # json+=" \"outer\": \"$outer\"\n"
+    # json+="  \"outer\": \"$(json_escape "$outer")\"\n"
+    json+="}"
+
+    #Write the output to index.json file in the directory                                                                                                                                                                                                                                                   
+    echo -e "$json" > "$dir/index.json"
+}
+
+#Recursively process directories
+process_recursively(){
+    local dir="$1"
+
+    # echo "Processing: $dir" >&2  # DEBUG
+
+    process_directory "$dir"
+
+    while IFS= read -r -d '' subdir; do
+        # echo "Processing: $dir" >&2  # DEBUG
+        if [ -d "$subdir" ]; then
+            process_recursively "$subdir"
+        fi 
+    done < <(find "$dir" -mindepth 1 -maxdepth 1 -type d -print0)
+}
+
+#Start processing from root
+process_recursively "$ROOT_DIR"
+
+exit 0
+
+

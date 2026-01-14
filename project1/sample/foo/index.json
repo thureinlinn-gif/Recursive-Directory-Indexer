@@ -1,0 +1,7 @@
+{
+ "files": ["index.json"],
+ "directories": ["baaz"],
+ "special_files": [],
+ "special_directories": [],
+  "outer": ".."
+}

@@ -1,0 +1,7 @@
+{
+ "files": ["index.json"],
+ "directories": ["bar", "foo"],
+ "special_files": [],
+ "special_directories": [],
+  "outer": "."
+}
