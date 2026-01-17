@@ -173,8 +173,4 @@ Uses `realpath` to handle various path formats:
 
 Academic project - educational use only
 
----
 
-**Author**: [Your Name]  
-**Course**: CS 265  
-**Date**: January 2026
